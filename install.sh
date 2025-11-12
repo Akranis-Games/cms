@@ -382,13 +382,20 @@ sed -i "s|APP_URL=.*|APP_URL=${APP_URL}|" .env
 print_header "Verzeichnisse und Berechtigungen konfigurieren"
 mkdir -p bootstrap/cache
 mkdir -p storage/app
+mkdir -p storage/app/public
 mkdir -p storage/framework/cache
 mkdir -p storage/framework/sessions
 mkdir -p storage/framework/views
 mkdir -p storage/logs
 
-chown -R www-data:www-data storage bootstrap/cache
+# Setze Berechtigungen
+chown -R www-data:www-data storage bootstrap/cache 2>/dev/null || true
 chmod -R 775 storage bootstrap/cache
+
+# Stelle sicher, dass www-data Schreibrechte hat
+if id "www-data" &>/dev/null; then
+    chown -R www-data:www-data storage bootstrap/cache 2>/dev/null || true
+fi
 
 print_success "Berechtigungen gesetzt"
 
@@ -415,11 +422,19 @@ print_header "Cache optimieren"
 
 # Erstelle View-Verzeichnis falls nicht vorhanden
 mkdir -p storage/framework/views
+chmod -R 775 storage/framework/views
+chown -R www-data:www-data storage/framework/views 2>/dev/null || true
 
 # Cache leeren bevor neu erstellt
 php artisan config:clear 2>/dev/null || true
 php artisan route:clear 2>/dev/null || true
-php artisan view:clear 2>/dev/null || true
+
+# View Cache leeren (mit Fehlerbehandlung)
+if [ -d "storage/framework/views" ]; then
+    php artisan view:clear 2>/dev/null || true
+else
+    print_warning "View-Verzeichnis fehlt, überspringe view:clear"
+fi
 
 # Cache neu erstellen
 php artisan config:cache
@@ -436,11 +451,16 @@ else
     print_warning "Route Cache konnte nicht erstellt werden (möglicherweise Route-Konflikte)"
 fi
 
-php artisan view:cache
-if [ $? -eq 0 ]; then
-    print_success "View Cache erstellt"
+# View Cache nur erstellen wenn Verzeichnis existiert
+if [ -d "storage/framework/views" ]; then
+    php artisan view:cache 2>/dev/null
+    if [ $? -eq 0 ]; then
+        print_success "View Cache erstellt"
+    else
+        print_warning "View Cache konnte nicht erstellt werden (nicht kritisch)"
+    fi
 else
-    print_warning "View Cache konnte nicht erstellt werden"
+    print_warning "View-Verzeichnis fehlt, überspringe view:cache"
 fi
 
 # Assets kompilieren
