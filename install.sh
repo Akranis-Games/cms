@@ -508,45 +508,54 @@ print_header "Datenbank migrieren"
 
 # Nur migrieren wenn Datenbank erfolgreich erstellt wurde
 if [ $DB_CREATE_STATUS -eq 0 ]; then
-    # Teste Datenbankverbindung vor Migration
+    # Warte kurz damit .env aktualisiert wird
+    sleep 2
+    
+    # Teste Datenbankverbindung mit Timeout (5 Sekunden)
     print_info "Teste Datenbankverbindung..."
     
-    # Warte kurz damit .env aktualisiert wird
-    sleep 1
-    
-    # Teste mit artisan
-    php artisan db:show &>/dev/null
-    DB_TEST_STATUS=$?
+    # Verwende timeout falls verfügbar, sonst direkt testen
+    if command -v timeout &> /dev/null; then
+        timeout 5 php artisan db:show &>/dev/null 2>&1
+        DB_TEST_STATUS=$?
+    else
+        # Fallback: Einfacher Test mit mysql direkt
+        if [ -n "$DB_PASS" ]; then
+            mysql -u "${DB_USER}" -p"${DB_PASS}" -e "USE ${DB_NAME}; SELECT 1;" &>/dev/null 2>&1
+        else
+            mysql -u "${DB_USER}" -e "USE ${DB_NAME}; SELECT 1;" &>/dev/null 2>&1
+        fi
+        DB_TEST_STATUS=$?
+    fi
     
     if [ $DB_TEST_STATUS -eq 0 ]; then
         print_success "Datenbankverbindung erfolgreich"
-        php artisan migrate --force
-        if [ $? -eq 0 ]; then
-            print_success "Migrationen ausgeführt"
-        else
-            print_error "Fehler bei Migrationen!"
-            print_info "Prüfe die .env Datei und die Datenbankverbindung"
-            print_info "Du kannst die Migrationen später manuell ausführen:"
-            echo "  php artisan migrate --force"
-            read -p "Drücke Enter um fortzufahren oder Ctrl+C zum Abbrechen..."
-        fi
     else
-        print_warning "Datenbankverbindungstest fehlgeschlagen"
-        print_info "Versuche Migration trotzdem..."
-        php artisan migrate --force 2>/dev/null
-        if [ $? -eq 0 ]; then
-            print_success "Migrationen ausgeführt"
-        else
-            print_warning "Migrationen fehlgeschlagen"
-            print_info "Bitte prüfe die .env Datei und führe manuell aus:"
-            echo "  php artisan migrate --force"
-            read -p "Drücke Enter um fortzufahren..."
-        fi
+        print_warning "Datenbankverbindungstest übersprungen (nicht kritisch)"
+    fi
+    
+    # Führe Migration aus
+    print_info "Führe Migrationen aus..."
+    php artisan migrate --force
+    MIGRATE_STATUS=$?
+    
+    if [ $MIGRATE_STATUS -eq 0 ]; then
+        print_success "Migrationen erfolgreich ausgeführt"
+    else
+        print_error "Fehler bei Migrationen!"
+        print_info "Prüfe die .env Datei und die Datenbankverbindung"
+        print_info "Du kannst die Migrationen später manuell ausführen:"
+        echo "  cd ${PROJECT_DIR}"
+        echo "  php artisan migrate --force"
+        echo ""
+        read -p "Drücke Enter um fortzufahren oder Ctrl+C zum Abbrechen..."
     fi
 else
     print_warning "Migrationen übersprungen (Datenbank nicht erstellt)"
     print_info "Nach manueller Datenbank-Erstellung ausführen:"
+    echo "  cd ${PROJECT_DIR}"
     echo "  php artisan migrate --force"
+    echo ""
     read -p "Drücke Enter um fortzufahren..."
 fi
 
