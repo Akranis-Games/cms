@@ -144,29 +144,46 @@ fi
 
 # MariaDB installieren und konfigurieren
 print_header "MariaDB installieren"
+MYSQL_ROOT_PASS=""
+MYSQL_ROOT_PASS_SET=false
+
 if ! command -v mariadb &> /dev/null && ! command -v mysql &> /dev/null; then
     apt-get install -y mariadb-server mariadb-client
     systemctl start mariadb
     systemctl enable mariadb
     
-    # MariaDB Root-Passwort setzen (falls nicht gesetzt)
-    print_warning "MariaDB Root-Passwort wird benötigt"
-    read -sp "MariaDB Root-Passwort eingeben (Enter für Standard 'root'): " MYSQL_ROOT_PASS
-    echo ""
-    
-    if [ -z "$MYSQL_ROOT_PASS" ]; then
-        MYSQL_ROOT_PASS="root"
-    fi
-    
-    # Setze Root-Passwort
-    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';" 2>/dev/null || \
-    mysql -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('${MYSQL_ROOT_PASS}');" 2>/dev/null || true
-    mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
+    # Warte kurz bis MariaDB gestartet ist
+    sleep 3
     
     print_success "MariaDB installiert"
     print_info "Führe 'mariadb-secure-installation' aus, um die Sicherheitseinstellungen zu konfigurieren (optional)"
 else
     print_info "MariaDB/MySQL bereits installiert"
+fi
+
+# Prüfe ob MariaDB läuft
+if ! systemctl is-active --quiet mariadb && ! systemctl is-active --quiet mysql; then
+    print_warning "MariaDB/MySQL läuft nicht, versuche zu starten..."
+    systemctl start mariadb 2>/dev/null || systemctl start mysql 2>/dev/null
+    sleep 2
+fi
+
+# Versuche Root-Zugriff zu testen
+print_info "Teste Datenbank-Verbindung..."
+if mysql -u root -e "SELECT 1;" &>/dev/null; then
+    print_success "Datenbank-Verbindung ohne Passwort erfolgreich"
+    MYSQL_ROOT_PASS_SET=false
+elif mysql -u root -proot -e "SELECT 1;" &>/dev/null; then
+    print_success "Datenbank-Verbindung mit Standard-Passwort erfolgreich"
+    MYSQL_ROOT_PASS="root"
+    MYSQL_ROOT_PASS_SET=true
+else
+    print_warning "Datenbank-Verbindung fehlgeschlagen. Passwort wird benötigt."
+    read -sp "MariaDB Root-Passwort eingeben (Enter für kein Passwort): " MYSQL_ROOT_PASS
+    echo ""
+    if [ -n "$MYSQL_ROOT_PASS" ]; then
+        MYSQL_ROOT_PASS_SET=true
+    fi
 fi
 
 # Apache2 installieren
@@ -327,56 +344,143 @@ DB_USER=${DB_USER:-cms_user}
 read -sp "Datenbank-Passwort: " DB_PASS
 echo ""
 
+if [ -z "$DB_PASS" ]; then
+    print_warning "Kein Datenbank-Passwort angegeben, verwende leeres Passwort"
+    DB_PASS=""
+fi
+
 # Datenbank erstellen
 print_info "Erstelle Datenbank..."
 
-# Versuche zuerst mit Passwort
-if [ -n "$MYSQL_ROOT_PASS" ] && [ "$MYSQL_ROOT_PASS" != "" ]; then
-    mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOF 2>/dev/null
+DB_CREATE_STATUS=1
+DB_CREATE_ERROR=""
+
+# Versuche verschiedene Methoden
+if [ "$MYSQL_ROOT_PASS_SET" = true ] && [ -n "$MYSQL_ROOT_PASS" ]; then
+    # Methode 1: Mit Root-Passwort
+    print_info "Versuche mit Root-Passwort..."
+    mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOF 2>/tmp/mysql_error.log
 CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
 FLUSH PRIVILEGES;
 EOF
     DB_CREATE_STATUS=$?
-else
-    DB_CREATE_STATUS=1
+    if [ $DB_CREATE_STATUS -eq 0 ]; then
+        print_success "Datenbank mit Root-Passwort erstellt"
+    fi
 fi
 
-# Falls mit Passwort fehlgeschlagen, versuche ohne Passwort
+# Falls Methode 1 fehlgeschlagen, versuche ohne Passwort
 if [ $DB_CREATE_STATUS -ne 0 ]; then
-    print_warning "Versuche ohne Passwort..."
-    mysql -u root <<EOF 2>/dev/null
+    print_info "Versuche ohne Root-Passwort..."
+    mysql -u root <<EOF 2>/tmp/mysql_error.log
 CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
 FLUSH PRIVILEGES;
 EOF
     DB_CREATE_STATUS=$?
+    if [ $DB_CREATE_STATUS -eq 0 ]; then
+        print_success "Datenbank ohne Root-Passwort erstellt"
+    fi
 fi
 
+# Falls immer noch fehlgeschlagen, versuche mit Standard-Passwort "root"
+if [ $DB_CREATE_STATUS -ne 0 ]; then
+    print_info "Versuche mit Standard-Passwort 'root'..."
+    mysql -u root -proot <<EOF 2>/tmp/mysql_error.log
+CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+    DB_CREATE_STATUS=$?
+    if [ $DB_CREATE_STATUS -eq 0 ]; then
+        print_success "Datenbank mit Standard-Passwort erstellt"
+        MYSQL_ROOT_PASS="root"
+        MYSQL_ROOT_PASS_SET=true
+    fi
+fi
+
+# Finale Prüfung
 if [ $DB_CREATE_STATUS -eq 0 ]; then
-    print_success "Datenbank erstellt"
+    # Teste die Verbindung
+    if [ -n "$DB_PASS" ]; then
+        mysql -u "${DB_USER}" -p"${DB_PASS}" -e "USE ${DB_NAME}; SELECT 1;" &>/dev/null
+    else
+        mysql -u "${DB_USER}" -e "USE ${DB_NAME}; SELECT 1;" &>/dev/null
+    fi
+    
+    if [ $? -eq 0 ]; then
+        print_success "Datenbank-Verbindung erfolgreich getestet"
+    else
+        print_warning "Datenbank erstellt, aber Verbindungstest fehlgeschlagen"
+    fi
 else
     print_error "Fehler beim Erstellen der Datenbank!"
+    if [ -f /tmp/mysql_error.log ]; then
+        print_info "Fehlerdetails:"
+        cat /tmp/mysql_error.log | head -5
+        rm -f /tmp/mysql_error.log
+    fi
+    echo ""
     print_info "Bitte erstelle die Datenbank manuell:"
-    echo "  mysql -u root -p"
-    echo "  CREATE DATABASE ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
-    echo "  CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+    echo ""
+    if [ "$MYSQL_ROOT_PASS_SET" = true ]; then
+        echo "  mysql -u root -p'${MYSQL_ROOT_PASS}'"
+    else
+        echo "  mysql -u root"
+    fi
+    echo "  CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+    if [ -n "$DB_PASS" ]; then
+        echo "  CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+    else
+        echo "  CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost';"
+    fi
     echo "  GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
     echo "  FLUSH PRIVILEGES;"
-    read -p "Drücke Enter um fortzufahren (Datenbank muss manuell erstellt werden)..."
+    echo ""
+    read -p "Drücke Enter um fortzufahren (Datenbank muss manuell erstellt werden) oder Ctrl+C zum Abbrechen..."
 fi
 
 # .env Datei aktualisieren
-sed -i "s/DB_DATABASE=.*/DB_DATABASE=${DB_NAME}/" .env
-sed -i "s/DB_USERNAME=.*/DB_USERNAME=${DB_USER}/" .env
-sed -i "s/DB_PASSWORD=.*/DB_PASSWORD=${DB_PASS}/" .env
+print_info "Aktualisiere .env Datei..."
+
+# Escaping für sed (falls Passwort Sonderzeichen enthält)
+DB_PASS_ESCAPED=$(echo "$DB_PASS" | sed 's/[[\.*^$()+?{|]/\\&/g')
+
+# Aktualisiere Datenbank-Einstellungen
+if grep -q "^DB_DATABASE=" .env; then
+    sed -i "s|^DB_DATABASE=.*|DB_DATABASE=${DB_NAME}|" .env
+else
+    echo "DB_DATABASE=${DB_NAME}" >> .env
+fi
+
+if grep -q "^DB_USERNAME=" .env; then
+    sed -i "s|^DB_USERNAME=.*|DB_USERNAME=${DB_USER}|" .env
+else
+    echo "DB_USERNAME=${DB_USER}" >> .env
+fi
+
+if grep -q "^DB_PASSWORD=" .env; then
+    sed -i "s|^DB_PASSWORD=.*|DB_PASSWORD=${DB_PASS_ESCAPED}|" .env
+else
+    echo "DB_PASSWORD=${DB_PASS_ESCAPED}" >> .env
+fi
+
+print_success ".env Datei aktualisiert"
 
 # APP_URL konfigurieren
+print_info "APP_URL konfigurieren"
 read -p "APP_URL [http://localhost]: " APP_URL
 APP_URL=${APP_URL:-http://localhost}
-sed -i "s|APP_URL=.*|APP_URL=${APP_URL}|" .env
+if grep -q "^APP_URL=" .env; then
+    sed -i "s|^APP_URL=.*|APP_URL=${APP_URL}|" .env
+else
+    echo "APP_URL=${APP_URL}" >> .env
+fi
+print_success "APP_URL gesetzt: ${APP_URL}"
 
 # Verzeichnisse erstellen und Berechtigungen setzen
 print_header "Verzeichnisse und Berechtigungen konfigurieren"
@@ -401,15 +505,65 @@ print_success "Berechtigungen gesetzt"
 
 # Datenbank migrieren
 print_header "Datenbank migrieren"
-php artisan migrate --force
-print_success "Migrationen ausgeführt"
+
+# Nur migrieren wenn Datenbank erfolgreich erstellt wurde
+if [ $DB_CREATE_STATUS -eq 0 ]; then
+    # Teste Datenbankverbindung vor Migration
+    print_info "Teste Datenbankverbindung..."
+    
+    # Warte kurz damit .env aktualisiert wird
+    sleep 1
+    
+    # Teste mit artisan
+    php artisan db:show &>/dev/null
+    DB_TEST_STATUS=$?
+    
+    if [ $DB_TEST_STATUS -eq 0 ]; then
+        print_success "Datenbankverbindung erfolgreich"
+        php artisan migrate --force
+        if [ $? -eq 0 ]; then
+            print_success "Migrationen ausgeführt"
+        else
+            print_error "Fehler bei Migrationen!"
+            print_info "Prüfe die .env Datei und die Datenbankverbindung"
+            print_info "Du kannst die Migrationen später manuell ausführen:"
+            echo "  php artisan migrate --force"
+            read -p "Drücke Enter um fortzufahren oder Ctrl+C zum Abbrechen..."
+        fi
+    else
+        print_warning "Datenbankverbindungstest fehlgeschlagen"
+        print_info "Versuche Migration trotzdem..."
+        php artisan migrate --force 2>/dev/null
+        if [ $? -eq 0 ]; then
+            print_success "Migrationen ausgeführt"
+        else
+            print_warning "Migrationen fehlgeschlagen"
+            print_info "Bitte prüfe die .env Datei und führe manuell aus:"
+            echo "  php artisan migrate --force"
+            read -p "Drücke Enter um fortzufahren..."
+        fi
+    fi
+else
+    print_warning "Migrationen übersprungen (Datenbank nicht erstellt)"
+    print_info "Nach manueller Datenbank-Erstellung ausführen:"
+    echo "  php artisan migrate --force"
+    read -p "Drücke Enter um fortzufahren..."
+fi
 
 # Datenbank seeden
-read -p "Datenbank mit Testdaten seeden? (y/N): " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    php artisan db:seed --force
-    print_success "Datenbank geseedet"
+if [ $DB_CREATE_STATUS -eq 0 ]; then
+    read -p "Datenbank mit Testdaten seeden? (y/N): " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        php artisan db:seed --force
+        if [ $? -eq 0 ]; then
+            print_success "Datenbank geseedet"
+        else
+            print_warning "Fehler beim Seeding (nicht kritisch)"
+        fi
+    fi
+else
+    print_warning "Datenbank-Seeding übersprungen (Datenbank nicht erstellt)"
 fi
 
 # Storage Link erstellen
@@ -470,48 +624,50 @@ if [ -f "package.json" ]; then
     print_success "Assets kompiliert"
 fi
 
-# Apache2 Virtual Host erstellen
-print_header "Apache2 Virtual Host erstellen"
-read -p "Domain/Server-Name [localhost]: " SERVER_NAME
-SERVER_NAME=${SERVER_NAME:-localhost}
+# Apache2 Standard-Konfiguration anpassen
+print_header "Apache2 Standard-Konfiguration anpassen"
 
-APACHE_CONFIG="/etc/apache2/sites-available/cms.conf"
-cat > "$APACHE_CONFIG" <<EOF
-<VirtualHost *:80>
-    ServerName ${SERVER_NAME}
-    ServerAdmin webmaster@${SERVER_NAME}
-    DocumentRoot ${PROJECT_DIR}/public
+# Setze DocumentRoot auf public Verzeichnis
+APACHE_CONF="/etc/apache2/sites-available/000-default.conf"
 
-    <Directory ${PROJECT_DIR}/public>
-        Options -Indexes +FollowSymLinks
-        AllowOverride All
-        Require all granted
-    </Directory>
+# Backup der originalen Konfiguration
+if [ ! -f "${APACHE_CONF}.backup" ]; then
+    cp "${APACHE_CONF}" "${APACHE_CONF}.backup"
+    print_info "Backup der Apache-Konfiguration erstellt"
+fi
 
-    ErrorLog \${APACHE_LOG_DIR}/cms_error.log
-    CustomLog \${APACHE_LOG_DIR}/cms_access.log combined
+# Aktualisiere DocumentRoot
+sed -i "s|DocumentRoot.*|DocumentRoot ${PROJECT_DIR}/public|" "${APACHE_CONF}"
 
-    <FilesMatch \.php$>
-        SetHandler "proxy:unix:/var/run/php/php8.2-fpm.sock|fcgi://localhost"
-    </FilesMatch>
+# Stelle sicher, dass Directory-Konfiguration korrekt ist
+if ! grep -q "<Directory ${PROJECT_DIR}/public>" "${APACHE_CONF}"; then
+    # Füge Directory-Konfiguration nach DocumentRoot hinzu
+    # Verwende einen temporären Marker
+    sed -i "/DocumentRoot/a\\
+    <Directory ${PROJECT_DIR}/public>\\
+        Options -Indexes +FollowSymLinks\\
+        AllowOverride All\\
+        Require all granted\\
+    </Directory>" "${APACHE_CONF}"
+fi
 
-    <Proxy "unix:/var/run/php/php8.2-fpm.sock|fcgi://localhost">
-        ProxySet connectiontimeout=5 timeout=240
-    </Proxy>
-</VirtualHost>
-EOF
-
-# Apache2 Site aktivieren
-a2ensite cms.conf
-a2dissite 000-default.conf 2>/dev/null || true
+# Stelle sicher, dass AllowOverride All gesetzt ist
+if grep -q "<Directory ${PROJECT_DIR}/public>" "${APACHE_CONF}"; then
+    # Aktualisiere AllowOverride falls vorhanden
+    sed -i "s|AllowOverride.*|AllowOverride All|" "${APACHE_CONF}"
+fi
 
 # Apache2 Konfiguration testen
 apache2ctl configtest
 if [ $? -eq 0 ]; then
     systemctl reload apache2
     print_success "Apache2 konfiguriert und neu geladen"
+    print_info "DocumentRoot: ${PROJECT_DIR}/public"
 else
     print_error "Apache2 Konfiguration fehlerhaft!"
+    print_info "Stelle Standard-Konfiguration wieder her..."
+    cp "${APACHE_CONF}.backup" "${APACHE_CONF}"
+    print_warning "Bitte konfiguriere Apache2 manuell"
 fi
 
 # PHP-FPM neu starten
@@ -528,11 +684,11 @@ if [ -d "$PROJECT_DIR/.git" ]; then
 fi
 echo "  Datenbank: $DB_NAME"
 echo "  Datenbank-Benutzer: $DB_USER"
-echo "  Server-Name: $SERVER_NAME"
+echo "  Apache2 DocumentRoot: ${PROJECT_DIR}/public"
 echo ""
 echo -e "${YELLOW}Nächste Schritte:${NC}"
 echo "  1. Prüfe die .env Datei: ${PROJECT_DIR}/.env"
-echo "  2. Teste die Anwendung: http://${SERVER_NAME}"
+echo "  2. Teste die Anwendung: http://localhost (oder deine Server-IP)"
 echo "  3. Standard-Zugangsdaten (falls geseedet):"
 echo "     - Admin: admin@example.com / password"
 echo "     - User: test@example.com / password"
@@ -541,6 +697,7 @@ echo -e "${BLUE}Wichtige Befehle:${NC}"
 echo "  Logs ansehen: tail -f ${PROJECT_DIR}/storage/logs/laravel.log"
 echo "  Cache leeren: cd ${PROJECT_DIR} && php artisan cache:clear"
 echo "  Apache2 neu laden: systemctl reload apache2"
-echo "  Apache2 Logs: tail -f /var/log/apache2/cms_error.log"
+echo "  Apache2 Logs: tail -f /var/log/apache2/error.log"
+echo "  Apache2 Access Logs: tail -f /var/log/apache2/access.log"
 echo ""
 

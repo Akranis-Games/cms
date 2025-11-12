@@ -136,12 +136,29 @@ Wenn du den Chat mit Echtzeit-Updates verwenden möchtest:
 
 Stelle sicher, dass `mod_rewrite` aktiviert ist.
 
-#### Apache2
+#### Apache2 Standard-Konfiguration
+
+Das install.sh Script verwendet die Standard Apache2-Konfiguration (`000-default.conf`).
+
+**DocumentRoot wird automatisch auf `/var/www/html/cms/public` gesetzt.**
+
+**Apache2 Module aktivieren:**
+```bash
+a2enmod rewrite
+a2enmod headers
+a2enmod proxy
+a2enmod proxy_fcgi
+a2enmod setenvif
+systemctl reload apache2
+```
+
+**Manuelle Konfiguration (falls benötigt):**
+
+Bearbeite `/etc/apache2/sites-available/000-default.conf`:
 
 ```apache
 <VirtualHost *:80>
-    ServerName deine-domain.de
-    ServerAdmin webmaster@deine-domain.de
+    ServerAdmin webmaster@localhost
     DocumentRoot /var/www/html/cms/public
 
     <Directory /var/www/html/cms/public>
@@ -150,8 +167,8 @@ Stelle sicher, dass `mod_rewrite` aktiviert ist.
         Require all granted
     </Directory>
 
-    ErrorLog ${APACHE_LOG_DIR}/cms_error.log
-    CustomLog ${APACHE_LOG_DIR}/cms_access.log combined
+    ErrorLog ${APACHE_LOG_DIR}/error.log
+    CustomLog ${APACHE_LOG_DIR}/access.log combined
 
     <FilesMatch \.php$>
         SetHandler "proxy:unix:/var/run/php/php8.2-fpm.sock|fcgi://localhost"
@@ -163,16 +180,9 @@ Stelle sicher, dass `mod_rewrite` aktiviert ist.
 </VirtualHost>
 ```
 
-**Apache2 Module aktivieren:**
-```bash
-a2enmod rewrite
-a2enmod headers
-a2enmod proxy
-a2enmod proxy_fcgi
-a2enmod setenvif
-a2ensite cms.conf
-systemctl reload apache2
-```
+**Virtual Host (Optional):**
+
+Falls du einen eigenen Virtual Host erstellen möchtest:
 
 #### Nginx (Alternative)
 

@@ -1,4 +1,4 @@
-# Laravel CMS System (WIP do not yous yet)
+# Laravel CMS System
 
 Vollständiges CMS-Webseiten-System auf Laravel-Basis mit modernem Dark/Neon Design.
 
