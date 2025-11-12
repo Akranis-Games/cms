@@ -52,7 +52,7 @@ Das Script installiert automatisch:
 - PHP 8.2 und alle notwendigen Extensions
 - Composer
 - Node.js und npm
-- MySQL
+- MariaDB (MySQL-kompatibel)
 - Apache2
 - Git (kann Projekt aus Git-Repository klonen)
 - Konfiguriert das Projekt
@@ -62,6 +62,15 @@ Das Script installiert automatisch:
 
 **Git Repository klonen:**
 Das Script fragt automatisch, ob das Projekt aus einem Git-Repository geklont werden soll, falls das Verzeichnis leer oder nicht vorhanden ist.
+
+Standard-Repository: `https://github.com/Akranis-Games/cms.git`
+
+Du kannst auch direkt klonen:
+```bash
+git clone https://github.com/Akranis-Games/cms.git /var/www/html/cms
+cd /var/www/html/cms
+sudo ./install.sh
+```
 
 ## Design
 

@@ -4,9 +4,21 @@
 
 Für eine vollständige automatische Installation auf Debian 12:
 
+**Option 1: Mit Git Clone (empfohlen)**
 ```bash
+git clone https://github.com/Akranis-Games/cms.git /var/www/html/cms
+cd /var/www/html/cms
 chmod +x install.sh
 sudo ./install.sh
+```
+
+**Option 2: Script klont automatisch**
+```bash
+# Lade install.sh herunter
+wget https://raw.githubusercontent.com/Akranis-Games/cms/main/install.sh
+chmod +x install.sh
+sudo ./install.sh
+# Script fragt nach Git Repository URL (Standard: https://github.com/Akranis-Games/cms.git)
 ```
 
 Das Script installiert alle Abhängigkeiten und richtet das System automatisch ein.

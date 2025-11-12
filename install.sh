@@ -48,7 +48,7 @@ print_header "Laravel CMS Installation für Debian 12 (Apache2)"
 # System aktualisieren
 print_header "System aktualisieren"
 apt-get update
-apt-get install -y lsb-release
+apt-get install -y lsb-release curl wget
 apt-get upgrade -y
 print_success "System aktualisiert"
 
@@ -102,10 +102,25 @@ print_success "PHP 8.2 installiert"
 # Composer installieren
 print_header "Composer installieren"
 if ! command -v composer &> /dev/null; then
+    # Prüfe ob curl installiert ist
+    if ! command -v curl &> /dev/null; then
+        print_info "curl nicht gefunden, installiere curl..."
+        apt-get install -y curl
+    fi
+    
+    print_info "Lade Composer herunter..."
+    cd /tmp
     curl -sS https://getcomposer.org/installer | php
-    mv composer.phar /usr/local/bin/composer
-    chmod +x /usr/local/bin/composer
-    print_success "Composer installiert"
+    if [ -f "composer.phar" ]; then
+        mv composer.phar /usr/local/bin/composer
+        chmod +x /usr/local/bin/composer
+        cd - > /dev/null
+        print_success "Composer installiert"
+    else
+        cd - > /dev/null
+        print_error "Fehler beim Herunterladen von Composer!"
+        exit 1
+    fi
 else
     print_info "Composer bereits installiert"
 fi
@@ -113,6 +128,13 @@ fi
 # Node.js und npm installieren
 print_header "Node.js installieren"
 if ! command -v node &> /dev/null; then
+    # Prüfe ob curl installiert ist
+    if ! command -v curl &> /dev/null; then
+        print_info "curl nicht gefunden, installiere curl..."
+        apt-get install -y curl
+    fi
+    
+    print_info "Lade Node.js Setup Script herunter..."
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
     apt-get install -y nodejs
     print_success "Node.js installiert"
@@ -120,28 +142,31 @@ else
     print_info "Node.js bereits installiert"
 fi
 
-# MySQL installieren und konfigurieren
-print_header "MySQL installieren"
-if ! command -v mysql &> /dev/null; then
-    apt-get install -y mysql-server
-    systemctl start mysql
-    systemctl enable mysql
+# MariaDB installieren und konfigurieren
+print_header "MariaDB installieren"
+if ! command -v mariadb &> /dev/null && ! command -v mysql &> /dev/null; then
+    apt-get install -y mariadb-server mariadb-client
+    systemctl start mariadb
+    systemctl enable mariadb
     
-    # MySQL Root-Passwort setzen (falls nicht gesetzt)
-    print_warning "MySQL Root-Passwort wird benötigt"
-    read -sp "MySQL Root-Passwort eingeben (Enter für Standard): " MYSQL_ROOT_PASS
+    # MariaDB Root-Passwort setzen (falls nicht gesetzt)
+    print_warning "MariaDB Root-Passwort wird benötigt"
+    read -sp "MariaDB Root-Passwort eingeben (Enter für Standard 'root'): " MYSQL_ROOT_PASS
     echo ""
     
     if [ -z "$MYSQL_ROOT_PASS" ]; then
         MYSQL_ROOT_PASS="root"
     fi
     
-    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${MYSQL_ROOT_PASS}';" 2>/dev/null || true
+    # Setze Root-Passwort
+    mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${MYSQL_ROOT_PASS}';" 2>/dev/null || \
+    mysql -e "SET PASSWORD FOR 'root'@'localhost' = PASSWORD('${MYSQL_ROOT_PASS}');" 2>/dev/null || true
     mysql -e "FLUSH PRIVILEGES;" 2>/dev/null || true
     
-    print_success "MySQL installiert"
+    print_success "MariaDB installiert"
+    print_info "Führe 'mariadb-secure-installation' aus, um die Sicherheitseinstellungen zu konfigurieren (optional)"
 else
-    print_info "MySQL bereits installiert"
+    print_info "MariaDB/MySQL bereits installiert"
 fi
 
 # Apache2 installieren
@@ -174,14 +199,18 @@ print_header "Projekt-Verzeichnis konfigurieren"
 read -p "Projekt-Verzeichnis [/var/www/html/cms]: " PROJECT_DIR
 PROJECT_DIR=${PROJECT_DIR:-/var/www/html/cms}
 
+# Standard Git Repository URL
+DEFAULT_GIT_REPO="https://github.com/Akranis-Games/cms.git"
+
 # Prüfe ob Verzeichnis existiert und ob es leer ist
 if [ ! -d "$PROJECT_DIR" ]; then
     # Verzeichnis existiert nicht - Frage nach Git Clone
     print_info "Verzeichnis $PROJECT_DIR existiert nicht."
-    read -p "Soll das Projekt aus einem Git-Repository geklont werden? (y/N): " -n 1 -r
+    read -p "Soll das Projekt aus einem Git-Repository geklont werden? (Y/n): " -n 1 -r
     echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        read -p "Git Repository URL: " GIT_REPO_URL
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        read -p "Git Repository URL [${DEFAULT_GIT_REPO}]: " GIT_REPO_URL
+        GIT_REPO_URL=${GIT_REPO_URL:-$DEFAULT_GIT_REPO}
         if [ -z "$GIT_REPO_URL" ]; then
             print_error "Keine Git Repository URL angegeben!"
             exit 1
@@ -208,10 +237,11 @@ if [ ! -d "$PROJECT_DIR" ]; then
 elif [ -d "$PROJECT_DIR" ] && [ -z "$(ls -A $PROJECT_DIR 2>/dev/null)" ]; then
     # Verzeichnis existiert aber ist leer
     print_info "Verzeichnis $PROJECT_DIR existiert, ist aber leer."
-    read -p "Soll das Projekt aus einem Git-Repository geklont werden? (y/N): " -n 1 -r
+    read -p "Soll das Projekt aus einem Git-Repository geklont werden? (Y/n): " -n 1 -r
     echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        read -p "Git Repository URL: " GIT_REPO_URL
+    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+        read -p "Git Repository URL [${DEFAULT_GIT_REPO}]: " GIT_REPO_URL
+        GIT_REPO_URL=${GIT_REPO_URL:-$DEFAULT_GIT_REPO}
         if [ -z "$GIT_REPO_URL" ]; then
             print_error "Keine Git Repository URL angegeben!"
             exit 1
@@ -298,14 +328,45 @@ read -sp "Datenbank-Passwort: " DB_PASS
 echo ""
 
 # Datenbank erstellen
-mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOF
+print_info "Erstelle Datenbank..."
+
+# Versuche zuerst mit Passwort
+if [ -n "$MYSQL_ROOT_PASS" ] && [ "$MYSQL_ROOT_PASS" != "" ]; then
+    mysql -u root -p"${MYSQL_ROOT_PASS}" <<EOF 2>/dev/null
 CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
 FLUSH PRIVILEGES;
 EOF
+    DB_CREATE_STATUS=$?
+else
+    DB_CREATE_STATUS=1
+fi
 
-print_success "Datenbank erstellt"
+# Falls mit Passwort fehlgeschlagen, versuche ohne Passwort
+if [ $DB_CREATE_STATUS -ne 0 ]; then
+    print_warning "Versuche ohne Passwort..."
+    mysql -u root <<EOF 2>/dev/null
+CREATE DATABASE IF NOT EXISTS ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+    DB_CREATE_STATUS=$?
+fi
+
+if [ $DB_CREATE_STATUS -eq 0 ]; then
+    print_success "Datenbank erstellt"
+else
+    print_error "Fehler beim Erstellen der Datenbank!"
+    print_info "Bitte erstelle die Datenbank manuell:"
+    echo "  mysql -u root -p"
+    echo "  CREATE DATABASE ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+    echo "  CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+    echo "  GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+    echo "  FLUSH PRIVILEGES;"
+    read -p "Drücke Enter um fortzufahren (Datenbank muss manuell erstellt werden)..."
+fi
 
 # .env Datei aktualisieren
 sed -i "s/DB_DATABASE=.*/DB_DATABASE=${DB_NAME}/" .env
@@ -351,10 +412,36 @@ print_success "Storage Link erstellt"
 
 # Cache optimieren
 print_header "Cache optimieren"
+
+# Erstelle View-Verzeichnis falls nicht vorhanden
+mkdir -p storage/framework/views
+
+# Cache leeren bevor neu erstellt
+php artisan config:clear 2>/dev/null || true
+php artisan route:clear 2>/dev/null || true
+php artisan view:clear 2>/dev/null || true
+
+# Cache neu erstellen
 php artisan config:cache
+if [ $? -eq 0 ]; then
+    print_success "Config Cache erstellt"
+else
+    print_warning "Config Cache konnte nicht erstellt werden"
+fi
+
 php artisan route:cache
+if [ $? -eq 0 ]; then
+    print_success "Route Cache erstellt"
+else
+    print_warning "Route Cache konnte nicht erstellt werden (möglicherweise Route-Konflikte)"
+fi
+
 php artisan view:cache
-print_success "Cache optimiert"
+if [ $? -eq 0 ]; then
+    print_success "View Cache erstellt"
+else
+    print_warning "View Cache konnte nicht erstellt werden"
+fi
 
 # Assets kompilieren
 print_header "Assets kompilieren"

@@ -65,6 +65,14 @@ Route::prefix('ucp')->middleware('auth')->group(function () {
 Route::prefix('admin')->middleware('admin')->group(function () {
     Route::get('/', [AdminController::class, 'dashboard'])->name('admin.dashboard');
     
-    Route::resource('news', AdminNewsController::class);
+    Route::resource('news', AdminNewsController::class)->names([
+        'index' => 'admin.news.index',
+        'create' => 'admin.news.create',
+        'store' => 'admin.news.store',
+        'show' => 'admin.news.show',
+        'edit' => 'admin.news.edit',
+        'update' => 'admin.news.update',
+        'destroy' => 'admin.news.destroy',
+    ]);
 });
 
